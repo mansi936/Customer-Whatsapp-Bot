@@ -1,0 +1,280 @@
+version: '3.8'
+
+services:
+  # Redis with replication
+  redis-master:
+    image: redis:7-alpine
+    container_name: redis-master
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-master-data:/data
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-slave:
+    image: redis:7-alpine
+    container_name: redis-slave
+    command: redis-server --appendonly yes --replicaof redis-master 6379
+    depends_on:
+      - redis-master
+    volumes:
+      - redis-slave-data:/data
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # MongoDB with replica set
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-secure_password}
+      MONGO_INITDB_DATABASE: ecommerce_bot
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for product catalog
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ecommerce_bot
+      POSTGRES_USER: ecommerce_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecommerce_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Webhook Service (Main Application)
+  webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: webhook
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=4
+      - REDIS_HOST=redis-master
+      - REDIS_PORT=6379
+      - MONGODB_URL=mongodb://admin:${MONGO_PASSWORD:-secure_password}@mongodb:27017/ecommerce_bot?authSource=admin
+      - DATABASE_URL=postgresql://ecommerce_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/ecommerce_bot
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+      - "9090:9090"
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # MCP Server
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: mcp-server
+    command: python server/mcp_server.py
+    environment:
+      - REDIS_HOST=redis-master
+      - MONGODB_URL=mongodb://admin:${MONGO_PASSWORD:-secure_password}@mongodb:27017/ecommerce_bot?authSource=admin
+      - DATABASE_URL=postgresql://ecommerce_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/ecommerce_bot
+    env_file:
+      - .env
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis-master
+      - mongodb
+      - postgres
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Nginx Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - webhook
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=redis-datasource
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Redis Exporter for Prometheus
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-exporter
+    environment:
+      REDIS_ADDR: redis-master:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis-master
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # MongoDB Exporter for Prometheus
+  mongodb-exporter:
+    image: percona/mongodb_exporter:latest
+    container_name: mongodb-exporter
+    command:
+      - '--mongodb.uri=mongodb://admin:${MONGO_PASSWORD:-secure_password}@mongodb:27017'
+    ports:
+      - "9216:9216"
+    depends_on:
+      - mongodb
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Backup Service
+  backup:
+    image: alpine:latest
+    container_name: backup
+    volumes:
+      - ./backups:/backups
+      - mongodb-data:/data/mongodb:ro
+      - redis-master-data:/data/redis:ro
+      - postgres-data:/data/postgres:ro
+    command: >
+      sh -c "
+      while true; do
+        echo 'Starting backup at' $$(date);
+        tar -czf /backups/backup-$$(date +%Y%m%d-%H%M%S).tar.gz /data/;
+        find /backups -name 'backup-*.tar.gz' -mtime +7 -delete;
+        echo 'Backup completed at' $$(date);
+        sleep 86400;
+      done
+      "
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+networks:
+  ecommerce-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis-master-data:
+  redis-slave-data:
+  mongodb-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  webhook:
+    build: .
+    image: ecommerce-bot-webhook
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./webhook:/app/webhook
+    environment:
+      - ENV=development

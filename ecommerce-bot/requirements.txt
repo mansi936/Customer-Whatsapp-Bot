@@ -1,0 +1,16 @@
+# Core dependencies
+python-dotenv==1.0.0
+boto3==1.28.57
+pymongo==4.5.0
+openai==0.28.1
+
+# Optional: For using other LLM providers
+anthropic==0.7.0  # For Claude
+groq==0.4.0  # For Groq
+
+# For async operations
+asyncio==3.11.0
+
+# For better terminal output (optional)
+rich==13.6.0
+colorama==0.4.6
