@@ -189,7 +189,6 @@ class EnhancedRedisSessionService:
                 password=config.get("password"),
                 db=config.get("db", 0),
                 max_connections=config.get("max_connections", 50),
-                min_idle_time=300,
                 retry_on_timeout=True,
                 retry_on_error=[ConnectionError, TimeoutError],
                 socket_keepalive=True,

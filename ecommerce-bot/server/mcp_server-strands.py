@@ -33,7 +33,7 @@ from services.aws_services.recommendation_service import (
 from services.aws_services.put_events_service import put_event, put_events_batch
 
 # Initialize FastMCP server
-mcp = FastMCP("ecommerce")
+mcp = FastMCP("ecommerce",stateless_http=True, host="localhost", port=8002)
 
 # Configure logging to stderr to avoid interfering with MCP communication
 logging.basicConfig(
@@ -659,4 +659,4 @@ async def get_tryon_tips() -> str:
 # Main entry point
 if __name__ == "__main__":
     # Run the server with stdio transport
-    mcp.run(transport='stdio')
+    mcp.run(transport='streamable-http')

@@ -32,9 +32,12 @@ wheels/
 *.swp
 *.swo
 
-# Environment variables
+# Environment variables - NEVER commit these!
 .env
+.env.*
 *.env
+!.env.example
+!.env.*.example
 
 # OS
 .DS_Store
@@ -42,3 +45,26 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# Project specific
+*.db
+*.sqlite3
+temp/
+uploads/
+
+# Sensitive data
+*.pem
+*.key
+*.cert
+secrets/
+credentials/
+
+# Local development
+ngrok.yml
+.ngrok/
+local-data/
+
+# Test files
+test-images/
+test-outputs/
